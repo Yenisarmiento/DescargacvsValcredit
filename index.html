@@ -3,31 +3,40 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>PDF Plan de Pagos → CSV (Descarga automática)</title>
+  <title>PDF Plan de Pagos → CSV (descarga)</title>
 
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f8fafc; margin:24px; }
     .card { max-width: 920px; margin:auto; padding:24px; background:white; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.08); }
     h1 { margin:0 0 8px; }
     .muted { color:#6b7280; font-size:14px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin: 10px 0 6px; }
+    button { padding:10px 14px; border-radius:10px; border:none; cursor:pointer; font-weight:600; }
+    button.primary { background:#0f172a; color:white; }
+    button.secondary { background:#e5e7eb; color:#111827; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
     pre { background:#020617; color:#e5e7eb; padding:14px; border-radius:12px; max-height:320px; overflow:auto; font-size:13px; }
     .ok { color:#065f46; }
     .warn { color:#92400e; }
   </style>
 
-  <!-- ✅ PDF.js por CDN (esta versión sí expone window.pdfjsLib) -->
+  <!-- PDF.js por CDN (estable, crea window.pdfjsLib) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.js"></script>
 </head>
 
 <body>
   <div class="card">
-    <h1>PDF Plan de Pagos → CSV</h1>
+    <h1>Convertir Plan de Pagos PDF → CSV</h1>
     <p class="muted">
-      Sube el PDF y se descargará automáticamente el CSV con
-      <b>aval prorrateado</b> y <b>capital</b>.
+      Selecciona el PDF. Se intentará descargar automáticamente.
+      Si Chrome lo bloquea, usa <b>“Descargar ahora”</b>.
     </p>
 
-    <input id="pdfFile" type="file" accept="application/pdf" />
+    <div class="row">
+      <input id="pdfFile" type="file" accept="application/pdf" />
+      <button id="btnDownloadNow" class="secondary" disabled>Descargar ahora</button>
+    </div>
+
     <p id="status" class="muted"></p>
 
     <h3>Vista previa (CSV)</h3>
@@ -35,13 +44,17 @@
   </div>
 
 <script>
-  // Worker por CDN (no dependemos del repo)
+  // Worker por CDN
   pdfjsLib.GlobalWorkerOptions.workerSrc =
     "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
 
   const fileInput = document.getElementById("pdfFile");
+  const btnDownloadNow = document.getElementById("btnDownloadNow");
   const statusEl = document.getElementById("status");
   const previewEl = document.getElementById("preview");
+
+  let pendingUrl = null;
+  let pendingFilename = "plan_de_pagos.csv";
 
   function setStatus(msg, cls="muted") {
     statusEl.className = cls;
@@ -75,9 +88,6 @@
   }
 
   function prorrateoExacto(total, n) {
-    // COP enteros que sumen EXACTO:
-    // primeras n-1 cuotas: floor(total/n)
-    // última: restante
     const base = Math.floor(total / n);
     const parts = Array(n).fill(base);
     parts[n-1] = total - base * (n - 1);
@@ -89,16 +99,18 @@
     const avalMatch = text.match(/Valor\s+aval\s+\$\s*([\d\.,]+)/i);
     const avalTotal = avalMatch ? moneyToInt(avalMatch[1]) : 0;
 
-    // Cuota inicial (opcional)
     const rows = [];
+
+    // Cuota inicial (si aparece)
     const init = text.match(/Cuota\s+inicial\s+\$\s*([\d\.,]+)\s+(Pago\s+inmediato)/i);
     if (init) {
+      const v = moneyToInt(init[1]);
       rows.push({
         numero: "Cuota inicial",
         fecha_pago: init[2],
-        valor_total: moneyToInt(init[1]),
+        valor_total: v,
         aval_prorrateado: 0,
-        capital: moneyToInt(init[1])
+        capital: v
       });
     }
 
@@ -110,14 +122,13 @@
       cuotas.push({
         numero: parseInt(m[1], 10),
         fecha_pago: m[3],
-        valor_total: moneyToInt(m[2]),
+        valor_total: moneyToInt(m[2])
       });
     }
-
     if (!cuotas.length) throw new Error("No se detectaron cuotas en el PDF (¿es escaneado?).");
 
-    // Prorrateo exacto del aval sobre cuotas 1..N (sin incluir cuota inicial)
     cuotas.sort((a,b) => a.numero - b.numero);
+
     const n = cuotas.length;
     const parts = prorrateoExacto(avalTotal, n);
 
@@ -140,51 +151,68 @@
       return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
     };
     const lines = [headers.join(",")];
-    for (const r of rows) {
-      lines.push(headers.map(h => esc(r[h])).join(","));
-    }
+    for (const r of rows) lines.push(headers.map(h => esc(r[h])).join(","));
     return lines.join("\n");
   }
 
-  function downloadCsv(csvText, filename="plan_de_pagos.csv") {
+  function prepareDownload(csvText, filename) {
+    // limpia url previa
+    if (pendingUrl) URL.revokeObjectURL(pendingUrl);
+
     const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
+    pendingUrl = URL.createObjectURL(blob);
+    pendingFilename = filename;
+
+    // intento de descarga automática
     const a = document.createElement("a");
-    a.href = url;
-    a.download = filename;
+    a.href = pendingUrl;
+    a.download = pendingFilename;
+    a.style.display = "none";
     document.body.appendChild(a);
     a.click();
     a.remove();
-    URL.revokeObjectURL(url);
+
+    // habilita botón por si Chrome bloqueó
+    btnDownloadNow.disabled = false;
   }
+
+  btnDownloadNow.addEventListener("click", () => {
+    if (!pendingUrl) return;
+    const a = document.createElement("a");
+    a.href = pendingUrl;
+    a.download = pendingFilename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
 
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
 
-    try {
-      setStatus("Procesando PDF…", "muted");
-      previewEl.textContent = "(procesando...)";
+    btnDownloadNow.disabled = true;
+    previewEl.textContent = "(procesando...)";
+    setStatus("Procesando PDF…", "muted");
 
+    try {
       const text = await extractTextFromPdf(file);
       const { rows, avalTotal, n } = parsePlan(text);
+
       const csv = toCsv(rows);
-
       previewEl.textContent = csv;
-      setStatus(`✅ Listo. Cuotas: ${n} | Aval total: ${avalTotal}. Descargando CSV…`, "ok");
 
-      // descarga inmediata
-      downloadCsv(csv, "plan_de_pagos.csv");
+      setStatus(`✅ CSV listo | Cuotas: ${n} | Aval total: ${avalTotal}. Si no se descargó, presiona “Descargar ahora”.`, "ok");
+      prepareDownload(csv, "plan_de_pagos.csv");
+
     } catch (e) {
+      console.error(e);
       setStatus("❌ Error: " + (e.message || e), "warn");
       previewEl.textContent = "(error)";
-      console.error(e);
     } finally {
-      // permite subir el mismo archivo otra vez si hace falta
+      // permite re-subir el mismo archivo
       fileInput.value = "";
     }
   });
 </script>
 </body>
 </html>
-
