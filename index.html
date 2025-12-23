@@ -6,72 +6,30 @@
   <title>Convertir Plan de Pagos (PDF) → CSV</title>
 
   <style>
-    body {
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      background: #f8fafc;
-      margin: 24px;
-    }
-    .card {
-      max-width: 900px;
-      margin: auto;
-      padding: 24px;
-      background: white;
-      border-radius: 16px;
-      box-shadow: 0 10px 30px rgba(0,0,0,.08);
-    }
-    h1 { margin-top: 0; }
-    .muted { color: #6b7280; font-size: 14px; }
-    .row {
-      display: flex;
-      gap: 12px;
-      align-items: center;
-      flex-wrap: wrap;
-      margin: 16px 0;
-    }
-    input[type="file"] { padding: 8px; }
-    button {
-      padding: 10px 16px;
-      border-radius: 10px;
-      border: none;
-      cursor: pointer;
-      font-weight: 600;
-    }
-    button.primary {
-      background: #0f172a;
-      color: white;
-    }
-    button.secondary {
-      background: #e5e7eb;
-      color: #111827;
-    }
-    button:disabled {
-      opacity: .5;
-      cursor: not-allowed;
-    }
-    pre {
-      background: #020617;
-      color: #e5e7eb;
-      padding: 14px;
-      border-radius: 12px;
-      max-height: 320px;
-      overflow: auto;
-      font-size: 13px;
-    }
-    .ok { color: #065f46; }
-    .warn { color: #92400e; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f8fafc; margin:24px; }
+    .card { max-width: 900px; margin:auto; padding:24px; background:white; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.08); }
+    h1 { margin-top:0; }
+    .muted { color:#6b7280; font-size:14px; }
+    .row { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin:16px 0; }
+    input[type="file"] { padding:8px; }
+    button { padding:10px 16px; border-radius:10px; border:none; cursor:pointer; font-weight:600; }
+    button.primary { background:#0f172a; color:white; }
+    button.secondary { background:#e5e7eb; color:#111827; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    pre { background:#020617; color:#e5e7eb; padding:14px; border-radius:12px; max-height:320px; overflow:auto; font-size:13px; }
+    .ok { color:#065f46; }
+    .warn { color:#92400e; }
+    .errorBox { margin-top:10px; padding:10px 12px; border-radius:12px; background:#fff7ed; border:1px solid #fed7aa; color:#7c2d12; display:none; white-space:pre-wrap; }
   </style>
 
-  <!-- PDF.js desde CDN -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.js"></script>
+  <!-- ✅ PDF.js LOCAL (NO CDN) -->
+  <script src="./pdf.min.js"></script>
 </head>
 
 <body>
   <div class="card">
     <h1>Convertir Plan de Pagos (PDF) → CSV</h1>
-    <p class="muted">
-      Sube tu PDF y descarga un CSV (delimitado por comas) con:
-      <b>aval prorrateado</b> y <b>valor de cuota sin aval</b>.
-    </p>
+    <p class="muted">Sube tu PDF y descarga un CSV con aval prorrateado y valor de cuota sin aval.</p>
 
     <div class="row">
       <input id="pdfFile" type="file" accept="application/pdf" />
@@ -80,222 +38,227 @@
     </div>
 
     <div id="status" class="muted"></div>
+    <div id="errorBox" class="errorBox"></div>
 
     <h3>Vista previa</h3>
     <pre id="preview">(aquí verás el CSV)</pre>
   </div>
 
 <script>
-/* =============================
-   CONFIG PDF.js (CORREGIDO)
-============================= */
-const pdfjsLib = window.pdfjsLib; // ✅ así es con CDN
+  const statusEl = document.getElementById("status");
+  const errorBox = document.getElementById("errorBox");
+  const previewEl = document.getElementById("preview");
+  const fileInput = document.getElementById("pdfFile");
+  const processBtn = document.getElementById("processBtn");
+  const downloadBtn = document.getElementById("downloadBtn");
 
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
+  let latestCsvText = "";
 
-const fileInput   = document.getElementById("pdfFile");
-const processBtn  = document.getElementById("processBtn");
-const downloadBtn = document.getElementById("downloadBtn");
-const statusEl    = document.getElementById("status");
-const previewEl   = document.getElementById("preview");
-
-let latestCsvText = "";
-
-/* =============================
-   UTILIDADES
-============================= */
-function setStatus(msg, type="") {
-  statusEl.className = "muted " + type;
-  statusEl.textContent = msg;
-}
-
-function parseMoneyToInt(v) {
-  if (!v) return null;
-  const d = String(v).replace(/[^\d]/g, "");
-  return d ? parseInt(d, 10) : null;
-}
-
-function normalizeText(t) {
-  return (t || "")
-    .replace(/\u00A0/g, " ")
-    .replace(/[ \t]+/g, " ")
-    .replace(/\n+/g, "\n");
-}
-
-function escapeCsv(v) {
-  const s = v === null || v === undefined ? "" : String(v);
-  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-}
-
-function downloadText(filename, text) {
-  const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
-/* =============================
-   PDF → TEXTO
-============================= */
-async function extractTextFromPdf(file) {
-  const buffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-
-  let text = "";
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    // con PDF.js el “texto” sale como items; lo juntamos con espacios
-    text += content.items.map(it => it.str).join(" ") + "\n";
-  }
-  return text;
-}
-
-/* =============================
-   EXTRACCIÓN DE DATOS
-============================= */
-function extractNumeroCuotas(text) {
-  const m = text.match(/Número\s+de\s+cuotas:\s*(\d+)/i);
-  return m ? parseInt(m[1], 10) : null;
-}
-
-function extractValorAval(text) {
-  // En tu PDF aparece: "Valor aval $ 80.702"
-  const m = text.match(/Valor\s+aval\s+\$\s*([\d\.,]+)/i);
-  return m ? parseMoneyToInt(m[1]) : null;
-}
-
-function extractRows(text) {
-  const rows = [];
-
-  // Cuota inicial (en tu PDF aparece "Cuota inicial $ 432.330 Pago inmediato")
-  const init = text.match(/Cuota\s+inicial\s+\$\s*([\d\.,]+)\s+(Pago\s+inmediato)/i);
-  if (init) {
-    rows.push({
-      numero: "Cuota inicial",
-      valor: parseMoneyToInt(init[1]),
-      fecha_pago: init[2]
-    });
+  function setStatus(msg, type="") {
+    statusEl.className = "muted " + type;
+    statusEl.textContent = msg;
+    console.log("[STATUS]", msg);
   }
 
-  // Cuotas numeradas: "1 $ 272.368 28-02-2026"
-  const re = /(\d+)\s+\$\s*([\d\.,]+)\s+(\d{2}-\d{2}-\d{4})/g;
-  let m;
-  while ((m = re.exec(text)) !== null) {
-    rows.push({
-      numero: parseInt(m[1], 10),
-      valor: parseMoneyToInt(m[2]),
-      fecha_pago: m[3]
-    });
-  }
-
-  rows.sort((a,b) => {
-    if (a.numero === "Cuota inicial") return -1;
-    if (b.numero === "Cuota inicial") return 1;
-    return a.numero - b.numero;
-  });
-
-  return rows;
-}
-
-function inferNumeroCuotas(rows) {
-  const nums = rows.filter(r => typeof r.numero === "number").map(r => r.numero);
-  return nums.length ? Math.max(...nums) : null;
-}
-
-function applyAval(rows, valorAval, numeroCuotas) {
-  const avalPorCuota =
-    valorAval && numeroCuotas ? Math.round(valorAval / numeroCuotas) : 0;
-
-  return rows.map(r => {
-    const aplica = typeof r.numero === "number"; // solo cuotas 1..N
-    return {
-      ...r,
-      valor_aval_total: valorAval ?? "",
-      aval_prorrateado: aplica ? avalPorCuota : 0,
-      valor_cuota_sin_aval: (r.valor ?? 0) - (aplica ? avalPorCuota : 0)
-    };
-  });
-}
-
-function rowsToCsv(rows) {
-  const headers = [
-    "numero",
-    "valor",
-    "fecha_pago",
-    "valor_aval_total",
-    "aval_prorrateado",
-    "valor_cuota_sin_aval"
-  ];
-  const lines = [headers.join(",")];
-  for (const r of rows) {
-    lines.push(headers.map(h => escapeCsv(r[h])).join(","));
-  }
-  return lines.join("\n");
-}
-
-/* =============================
-   BOTONES
-============================= */
-processBtn.addEventListener("click", async () => {
-  const file = fileInput.files?.[0];
-  if (!file) {
-    setStatus("Sube un PDF primero.", "warn");
-    return;
-  }
-
-  try {
-    setStatus("Procesando PDF…");
-    previewEl.textContent = "(procesando…)";
-    downloadBtn.disabled = true;
-
-    const rawText = await extractTextFromPdf(file);
-    const text = normalizeText(rawText);
-
-    let numeroCuotas = extractNumeroCuotas(text);
-    const valorAval = extractValorAval(text);
-
-    const baseRows = extractRows(text);
-    if (!baseRows.length) {
-      throw new Error("No se detectaron cuotas en el PDF.");
-    }
-
-    if (!numeroCuotas) {
-      numeroCuotas = inferNumeroCuotas(baseRows);
-    }
-
-    const finalRows = applyAval(baseRows, valorAval, numeroCuotas);
-    latestCsvText = rowsToCsv(finalRows);
-
-    previewEl.textContent = latestCsvText;
-    downloadBtn.disabled = false;
-
-    setStatus(
-      `✅ Listo | Filas: ${finalRows.length} | Cuotas: ${numeroCuotas ?? "?"} | Aval: ${valorAval ?? "No encontrado"}`,
-      "ok"
-    );
-  } catch (err) {
+  function showError(err) {
+    const msg = (err && err.stack) ? err.stack : String(err);
+    errorBox.style.display = "block";
+    errorBox.textContent = msg;
     console.error(err);
-    setStatus("Error: " + (err.message || err), "warn");
-    previewEl.textContent = "(error al procesar)";
-    latestCsvText = "";
-    downloadBtn.disabled = true;
   }
-});
 
-downloadBtn.addEventListener("click", () => {
-  if (latestCsvText) {
-    downloadText("plan_de_pagos.csv", latestCsvText);
+  function clearError() {
+    errorBox.style.display = "none";
+    errorBox.textContent = "";
   }
-});
+
+  // ✅ Asegurar PDF.js
+  if (!window.pdfjsLib) {
+    setStatus("❌ No cargó PDF.js (pdf.min.js). Revisa que esté en el repo.", "warn");
+    showError("No existe window.pdfjsLib. Falta pdf.min.js o no está en la ruta correcta.");
+    throw new Error("pdfjsLib not found");
+  }
+
+  const pdfjsLib = window.pdfjsLib;
+
+  // ✅ Worker local
+  // Si por alguna razón falla, PDF.js hace fallback a fake worker (más lento pero funciona)
+  try {
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdf.worker.min.js";
+  } catch (e) {
+    console.warn("No se pudo setear workerSrc. Usará fake worker.", e);
+  }
+
+  function parseMoneyToInt(v) {
+    if (!v) return null;
+    const d = String(v).replace(/[^\d]/g, "");
+    return d ? parseInt(d, 10) : null;
+  }
+
+  function normalizeText(t) {
+    return (t || "")
+      .replace(/\u00A0/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n+/g, "\n");
+  }
+
+  function escapeCsv(v) {
+    const s = v === null || v === undefined ? "" : String(v);
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  }
+
+  function downloadText(filename, text) {
+    const blob = new Blob([text], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  async function extractTextFromPdf(file) {
+    const buffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+
+    let text = "";
+    for (let i = 1; i <= pdf.numPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      text += content.items.map(it => it.str).join(" ") + "\n";
+    }
+    return text;
+  }
+
+  function extractNumeroCuotas(text) {
+    const m = text.match(/Número\s+de\s+cuotas:\s*(\d+)/i);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  function extractValorAval(text) {
+    const m = text.match(/Valor\s+aval\s+\$\s*([\d\.,]+)/i);
+    return m ? parseMoneyToInt(m[1]) : null;
+  }
+
+  function extractRows(text) {
+    const rows = [];
+
+    // Cuota inicial
+    const init = text.match(/Cuota\s+inicial\s+\$\s*([\d\.,]+)\s+(Pago\s+inmediato)/i);
+    if (init) {
+      rows.push({
+        numero: "Cuota inicial",
+        valor: parseMoneyToInt(init[1]),
+        fecha_pago: init[2]
+      });
+    }
+
+    // Cuotas numeradas
+    const re = /(\d+)\s+\$\s*([\d\.,]+)\s+(\d{2}-\d{2}-\d{4})/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      rows.push({
+        numero: parseInt(m[1], 10),
+        valor: parseMoneyToInt(m[2]),
+        fecha_pago: m[3]
+      });
+    }
+
+    rows.sort((a,b) => {
+      if (a.numero === "Cuota inicial") return -1;
+      if (b.numero === "Cuota inicial") return 1;
+      return a.numero - b.numero;
+    });
+
+    return rows;
+  }
+
+  function inferNumeroCuotas(rows) {
+    const nums = rows.filter(r => typeof r.numero === "number").map(r => r.numero);
+    return nums.length ? Math.max(...nums) : null;
+  }
+
+  function applyAval(rows, valorAval, numeroCuotas) {
+    const avalPorCuota =
+      valorAval && numeroCuotas ? Math.round(valorAval / numeroCuotas) : 0;
+
+    return rows.map(r => {
+      const aplica = typeof r.numero === "number"; // solo 1..N
+      return {
+        ...r,
+        valor_aval_total: valorAval ?? "",
+        aval_prorrateado: aplica ? avalPorCuota : 0,
+        valor_cuota_sin_aval: (r.valor ?? 0) - (aplica ? avalPorCuota : 0)
+      };
+    });
+  }
+
+  function rowsToCsv(rows) {
+    const headers = [
+      "numero",
+      "valor",
+      "fecha_pago",
+      "valor_aval_total",
+      "aval_prorrateado",
+      "valor_cuota_sin_aval"
+    ];
+    const lines = [headers.join(",")];
+    for (const r of rows) {
+      lines.push(headers.map(h => escapeCsv(r[h])).join(","));
+    }
+    return lines.join("\n");
+  }
+
+  processBtn.addEventListener("click", async () => {
+    clearError();
+
+    const file = fileInput.files?.[0];
+    if (!file) {
+      setStatus("Sube un PDF primero.", "warn");
+      return;
+    }
+
+    try {
+      setStatus("Procesando PDF…");
+      previewEl.textContent = "(procesando…)";
+      downloadBtn.disabled = true;
+
+      const rawText = await extractTextFromPdf(file);
+      const text = normalizeText(rawText);
+
+      let numeroCuotas = extractNumeroCuotas(text);
+      const valorAval = extractValorAval(text);
+
+      const baseRows = extractRows(text);
+      if (!baseRows.length) throw new Error("No se detectaron cuotas. (El PDF podría ser escaneado o el formato cambió).");
+
+      if (!numeroCuotas) numeroCuotas = inferNumeroCuotas(baseRows);
+
+      const finalRows = applyAval(baseRows, valorAval, numeroCuotas);
+      latestCsvText = rowsToCsv(finalRows);
+
+      previewEl.textContent = latestCsvText;
+      downloadBtn.disabled = false;
+
+      setStatus(`✅ Listo | Filas: ${finalRows.length} | Cuotas: ${numeroCuotas ?? "?"} | Aval: ${valorAval ?? "No encontrado"}`, "ok");
+
+    } catch (err) {
+      setStatus("❌ Error procesando. Mira el detalle abajo.", "warn");
+      previewEl.textContent = "(error al procesar)";
+      latestCsvText = "";
+      downloadBtn.disabled = true;
+      showError(err);
+    }
+  });
+
+  downloadBtn.addEventListener("click", () => {
+    if (latestCsvText) downloadText("plan_de_pagos.csv", latestCsvText);
+  });
 </script>
 
 </body>
 </html>
+
 
