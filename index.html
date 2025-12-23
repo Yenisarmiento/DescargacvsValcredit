@@ -84,7 +84,7 @@
   // ✅ Worker local
   // Si por alguna razón falla, PDF.js hace fallback a fake worker (más lento pero funciona)
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc = "./pdf.worker.min.js";
+    pdfjsLib.GlobalWorkerOptions.workerSrc =   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
   } catch (e) {
     console.warn("No se pudo setear workerSrc. Usará fake worker.", e);
   }
@@ -260,6 +260,7 @@
 
 </body>
 </html>
+
 
 
 
