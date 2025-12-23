@@ -23,7 +23,7 @@
   </style>
 
   <!-- ✅ PDF.js LOCAL (NO CDN) -->
-  <script src="./pdf.min.js"         onerror="this.onerror=null; this.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.js'"> </script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.js"></script>
 </head>
 
 <body>
@@ -84,15 +84,10 @@
   // ✅ Worker local
   // Si por alguna razón falla, PDF.js hace fallback a fake worker (más lento pero funciona)
   try {
-    pdfjsLib.GlobalWorkerOptions.workerSrc =   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
-  } catch (e) {
-    console.warn("No se pudo setear workerSrc. Usará fake worker.", e);
-  }
+  
+pdfjsLib.GlobalWorkerOptions.workerSrc =
+  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
 
-  function parseMoneyToInt(v) {
-    if (!v) return null;
-    const d = String(v).replace(/[^\d]/g, "");
-    return d ? parseInt(d, 10) : null;
   }
 
   function normalizeText(t) {
@@ -260,6 +255,7 @@
 
 </body>
 </html>
+
 
 
 
