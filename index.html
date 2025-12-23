@@ -8,25 +8,21 @@
   <style>
     body { font-family: Arial, sans-serif; background:#f5f6fa; padding:20px; }
     .box { max-width:900px; margin:auto; background:#fff; padding:20px; border-radius:10px; }
-    button { padding:10px 14px; margin-right:10px; }
-    pre { background:#111; color:#0f0; padding:10px; max-height:300px; overflow:auto; }
+    pre { background:#111; color:#0f0; padding:10px; max-height:260px; overflow:auto; }
   </style>
 
-  <!-- PDF.js CDN (VERSIÓN ESTABLE) -->
+  <!-- PDF.js estable -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.js"></script>
 </head>
 
 <body>
 <div class="box">
   <h2>Convertir Plan de Pagos PDF → CSV</h2>
+  <p>Sube el PDF y el CSV se descargará automáticamente.</p>
 
   <input type="file" id="pdfFile" accept="application/pdf">
-  <br><br>
 
-  <button onclick="procesar()">Procesar PDF</button>
-  <button onclick="descargar()" id="btnDescargar" disabled>Descargar CSV</button>
-
-  <h3>Resultado</h3>
+  <h3>Vista previa</h3>
   <pre id="salida">(esperando PDF)</pre>
 </div>
 
@@ -34,14 +30,11 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
 
-let csvFinal = "";
+document.getElementById("pdfFile").addEventListener("change", procesarYDescargar);
 
-async function procesar() {
-  const file = document.getElementById("pdfFile").files[0];
-  if (!file) {
-    alert("Sube un PDF");
-    return;
-  }
+async function procesarYDescargar(event) {
+  const file = event.target.files[0];
+  if (!file) return;
 
   const buffer = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
@@ -53,11 +46,11 @@ async function procesar() {
     texto += content.items.map(i => i.str).join(" ") + "\n";
   }
 
-  // Extraer valor aval
+  // ===== Extraer valor aval total =====
   const avalMatch = texto.match(/Valor\s+aval\s+\$\s*([\d\.,]+)/i);
   const avalTotal = avalMatch ? parseInt(avalMatch[1].replace(/\D/g,'')) : 0;
 
-  // Extraer cuotas
+  // ===== Extraer cuotas =====
   const cuotas = [];
   const re = /(\d+)\s+\$\s*([\d\.,]+)\s+(\d{2}-\d{2}-\d{4})/g;
   let m;
@@ -70,10 +63,11 @@ async function procesar() {
   }
 
   if (!cuotas.length) {
-    alert("No se detectaron cuotas");
+    document.getElementById("salida").textContent = "No se detectaron cuotas.";
     return;
   }
 
+  // ===== Prorrateo exacto del aval =====
   const n = cuotas.length;
   const base = Math.floor(avalTotal / n);
   const ultimo = avalTotal - base * (n - 1);
@@ -86,21 +80,20 @@ async function procesar() {
     csv += `${c.numero},${c.fecha},${c.valor},${aval},${capital}\n`;
   });
 
-  csvFinal = csv;
+  // ===== Vista previa =====
   document.getElementById("salida").textContent = csv;
-  document.getElementById("btnDescargar").disabled = false;
-}
 
-function descargar() {
-  const blob = new Blob([csvFinal], { type: "text/csv;charset=utf-8" });
+  // ===== Descarga automática =====
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
   a.download = "plan_de_pagos.csv";
+  document.body.appendChild(a);
   a.click();
+  a.remove();
   URL.revokeObjectURL(url);
 }
 </script>
 </body>
 </html>
-
