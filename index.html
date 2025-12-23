@@ -1,99 +1,190 @@
 <!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8">
-  <title>PDF → CSV Plan de Pagos</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>PDF Plan de Pagos → CSV (Descarga automática)</title>
 
   <style>
-    body { font-family: Arial, sans-serif; background:#f5f6fa; padding:20px; }
-    .box { max-width:900px; margin:auto; background:#fff; padding:20px; border-radius:10px; }
-    pre { background:#111; color:#0f0; padding:10px; max-height:260px; overflow:auto; }
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; background:#f8fafc; margin:24px; }
+    .card { max-width: 920px; margin:auto; padding:24px; background:white; border-radius:16px; box-shadow:0 10px 30px rgba(0,0,0,.08); }
+    h1 { margin:0 0 8px; }
+    .muted { color:#6b7280; font-size:14px; }
+    pre { background:#020617; color:#e5e7eb; padding:14px; border-radius:12px; max-height:320px; overflow:auto; font-size:13px; }
+    .ok { color:#065f46; }
+    .warn { color:#92400e; }
   </style>
 
-  <!-- PDF.js estable -->
+  <!-- ✅ PDF.js por CDN (esta versión sí expone window.pdfjsLib) -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.js"></script>
 </head>
 
 <body>
-<div class="box">
-  <h2>Convertir Plan de Pagos PDF → CSV</h2>
-  <p>Sube el PDF y el CSV se descargará automáticamente.</p>
+  <div class="card">
+    <h1>PDF Plan de Pagos → CSV</h1>
+    <p class="muted">
+      Sube el PDF y se descargará automáticamente el CSV con
+      <b>aval prorrateado</b> y <b>capital</b>.
+    </p>
 
-  <input type="file" id="pdfFile" accept="application/pdf">
+    <input id="pdfFile" type="file" accept="application/pdf" />
+    <p id="status" class="muted"></p>
 
-  <h3>Vista previa</h3>
-  <pre id="salida">(esperando PDF)</pre>
-</div>
+    <h3>Vista previa (CSV)</h3>
+    <pre id="preview">(esperando PDF...)</pre>
+  </div>
 
 <script>
-pdfjsLib.GlobalWorkerOptions.workerSrc =
-  "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
+  // Worker por CDN (no dependemos del repo)
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.js";
 
-document.getElementById("pdfFile").addEventListener("change", procesarYDescargar);
+  const fileInput = document.getElementById("pdfFile");
+  const statusEl = document.getElementById("status");
+  const previewEl = document.getElementById("preview");
 
-async function procesarYDescargar(event) {
-  const file = event.target.files[0];
-  if (!file) return;
-
-  const buffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
-
-  let texto = "";
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const content = await page.getTextContent();
-    texto += content.items.map(i => i.str).join(" ") + "\n";
+  function setStatus(msg, cls="muted") {
+    statusEl.className = cls;
+    statusEl.textContent = msg;
   }
 
-  // ===== Extraer valor aval total =====
-  const avalMatch = texto.match(/Valor\s+aval\s+\$\s*([\d\.,]+)/i);
-  const avalTotal = avalMatch ? parseInt(avalMatch[1].replace(/\D/g,'')) : 0;
+  function moneyToInt(s) {
+    if (!s) return 0;
+    const digits = String(s).replace(/[^\d]/g, "");
+    return digits ? parseInt(digits, 10) : 0;
+  }
 
-  // ===== Extraer cuotas =====
-  const cuotas = [];
-  const re = /(\d+)\s+\$\s*([\d\.,]+)\s+(\d{2}-\d{2}-\d{4})/g;
-  let m;
-  while ((m = re.exec(texto)) !== null) {
-    cuotas.push({
-      numero: parseInt(m[1]),
-      valor: parseInt(m[2].replace(/\D/g,'')),
-      fecha: m[3]
+  function normalizeText(t) {
+    return (t || "")
+      .replace(/\u00A0/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n+/g, "\n");
+  }
+
+  async function extractTextFromPdf(file) {
+    const buffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+
+    let text = "";
+    for (let p = 1; p <= pdf.numPages; p++) {
+      const page = await pdf.getPage(p);
+      const content = await page.getTextContent();
+      text += content.items.map(i => i.str).join(" ") + "\n";
+    }
+    return normalizeText(text);
+  }
+
+  function prorrateoExacto(total, n) {
+    // COP enteros que sumen EXACTO:
+    // primeras n-1 cuotas: floor(total/n)
+    // última: restante
+    const base = Math.floor(total / n);
+    const parts = Array(n).fill(base);
+    parts[n-1] = total - base * (n - 1);
+    return parts;
+  }
+
+  function parsePlan(text) {
+    // Valor aval total
+    const avalMatch = text.match(/Valor\s+aval\s+\$\s*([\d\.,]+)/i);
+    const avalTotal = avalMatch ? moneyToInt(avalMatch[1]) : 0;
+
+    // Cuota inicial (opcional)
+    const rows = [];
+    const init = text.match(/Cuota\s+inicial\s+\$\s*([\d\.,]+)\s+(Pago\s+inmediato)/i);
+    if (init) {
+      rows.push({
+        numero: "Cuota inicial",
+        fecha_pago: init[2],
+        valor_total: moneyToInt(init[1]),
+        aval_prorrateado: 0,
+        capital: moneyToInt(init[1])
+      });
+    }
+
+    // Cuotas numeradas
+    const cuotas = [];
+    const re = /(\d+)\s+\$\s*([\d\.,]+)\s+(\d{2}-\d{2}-\d{4})/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      cuotas.push({
+        numero: parseInt(m[1], 10),
+        fecha_pago: m[3],
+        valor_total: moneyToInt(m[2]),
+      });
+    }
+
+    if (!cuotas.length) throw new Error("No se detectaron cuotas en el PDF (¿es escaneado?).");
+
+    // Prorrateo exacto del aval sobre cuotas 1..N (sin incluir cuota inicial)
+    cuotas.sort((a,b) => a.numero - b.numero);
+    const n = cuotas.length;
+    const parts = prorrateoExacto(avalTotal, n);
+
+    cuotas.forEach((c, i) => {
+      const aval = parts[i];
+      rows.push({
+        ...c,
+        aval_prorrateado: aval,
+        capital: c.valor_total - aval
+      });
     });
+
+    return { rows, avalTotal, n };
   }
 
-  if (!cuotas.length) {
-    document.getElementById("salida").textContent = "No se detectaron cuotas.";
-    return;
+  function toCsv(rows) {
+    const headers = ["numero","fecha_pago","valor_total","aval_prorrateado","capital"];
+    const esc = (v) => {
+      const s = (v === null || v === undefined) ? "" : String(v);
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g,'""')}"` : s;
+    };
+    const lines = [headers.join(",")];
+    for (const r of rows) {
+      lines.push(headers.map(h => esc(r[h])).join(","));
+    }
+    return lines.join("\n");
   }
 
-  // ===== Prorrateo exacto del aval =====
-  const n = cuotas.length;
-  const base = Math.floor(avalTotal / n);
-  const ultimo = avalTotal - base * (n - 1);
+  function downloadCsv(csvText, filename="plan_de_pagos.csv") {
+    const blob = new Blob([csvText], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
 
-  let csv = "numero,fecha_pago,valor_total,aval_prorrateado,capital\n";
+  fileInput.addEventListener("change", async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
 
-  cuotas.forEach((c, i) => {
-    const aval = (i === n - 1) ? ultimo : base;
-    const capital = c.valor - aval;
-    csv += `${c.numero},${c.fecha},${c.valor},${aval},${capital}\n`;
+    try {
+      setStatus("Procesando PDF…", "muted");
+      previewEl.textContent = "(procesando...)";
+
+      const text = await extractTextFromPdf(file);
+      const { rows, avalTotal, n } = parsePlan(text);
+      const csv = toCsv(rows);
+
+      previewEl.textContent = csv;
+      setStatus(`✅ Listo. Cuotas: ${n} | Aval total: ${avalTotal}. Descargando CSV…`, "ok");
+
+      // descarga inmediata
+      downloadCsv(csv, "plan_de_pagos.csv");
+    } catch (e) {
+      setStatus("❌ Error: " + (e.message || e), "warn");
+      previewEl.textContent = "(error)";
+      console.error(e);
+    } finally {
+      // permite subir el mismo archivo otra vez si hace falta
+      fileInput.value = "";
+    }
   });
-
-  // ===== Vista previa =====
-  document.getElementById("salida").textContent = csv;
-
-  // ===== Descarga automática =====
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "plan_de_pagos.csv";
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
 </script>
 </body>
 </html>
+
